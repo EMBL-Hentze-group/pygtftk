@@ -183,6 +183,8 @@ __notes__ = """
  -- If you manually specify the combinations to be studied with -\-multiple-overlap-custom-combis, use the following format for the text file : 
  The order is the same as -\-more-beds (ie. if -\-more-bed is "A.bed B.bed C.bed", "1 0 1 1" means Query + B + C). Data should be whitespace separated with one combination per line.
  
+ --features : is a custom modification to filter to the set of given input genomic features. The default input features are the ones important
+  for eCLIP datasets.
 """
 
 
@@ -224,7 +226,15 @@ def make_parser():
                             required=True)
 
     # --------------------- More regions  ------------------------------------- #
-
+    parser_grp.add_argument('-fs','--features',
+                            help="A comma seperated list of features [gtf file 3rd column]",
+                            default='exon,five_prime_utr,three_prime_utr,start_codon,stop_codon', # default='gene,transcript,exon,CDS,five_prime_utr,three_prime_utr,start_codon,stop_codon'
+                            type=str,
+                            required=False)
+    parser_grp.add_argument('-si','--skip-Intergenic',
+                            help='Use this commandline flag to skip processing intergenic regions',
+                            action="store_true",
+                            required=False)    
     parser_grp.add_argument('-b', '--more-bed',
                             help="A list of bed files to be considered as additional genomic annotations.",
                             type=arg_formatter.FormattedFile(mode='r', file_ext='bed'),
@@ -253,13 +263,13 @@ def make_parser():
                             required=False)
 
     parser_grp.add_argument('-u', '--upstream',
-                            help="Extend the TSS and TTS of in 5' by a given value.",
+                            help="Extend the TSS and TTS of in 5' by a given value. Skipped if '-u' and '-d' are 0",
                             default=1000,
                             type=int,
                             required=False)
 
     parser_grp.add_argument('-d', '--downstream',
-                            help="Extend the TSS and TTS of in  3' by a given value. ",
+                            help="Extend the TSS and TTS of in  3' by a given value. Skipped if '-u' and '-d' are 0",
                             default=1000,
                             type=int,
                             required=False)
@@ -430,7 +440,8 @@ def ologram(inputfile=None,
             peak_file=None,
             chrom_info=None,
             tsv_file_path=None,
-
+            features=None,
+            skip_Intergenic = False,
             more_bed=None,
             more_bed_labels=None,
 
@@ -557,6 +568,15 @@ def ologram(inputfile=None,
         if chrom_info is None:
             message("Please provide a chromInfo file (--chrom-info)",
                     type="ERROR")
+        basic_features = features.split(",")
+        for feat in basic_features:
+            if not re.search(r"^[A-Za-z0-9_]+$", feat):
+                message("Problem with:" + feat, type="WARNING")
+                message(
+                        "Only alphanumeric characters and '_' allowed for --features",
+                        type="ERROR")
+        message("Basic features from user input: {}".format(", ".join(basic_features)),type="INFO")
+
 
     # -------------------------------------------------------------------------
     # chrom_len will store the chromosome sizes.
@@ -803,7 +823,11 @@ def ologram(inputfile=None,
 
     if not no_gtf:
         if not no_basic_feature:
-            for feat_type in gtf.get_feature_list(nr=True):
+            common_feat = set(basic_features) & set(gtf.get_feature_list(nr=True))
+            if len(common_feat)==0:
+                message("Cannot find any input features: {}".format(", ".join(common_feat)),type="ERROR")
+            message("Features found in GTF file: {}".format(", ".join(common_feat)),type="INFO")
+            for feat_type in common_feat:
                 message("Processing " + str(feat_type), type="INFO")
                 gtf_sub = gtf.select_by_key("feature", feat_type, 0)
                 gtf_sub_bed = gtf_sub.to_bed(name=["transcript_id",
@@ -823,16 +847,19 @@ def ologram(inputfile=None,
                 # -------------------------------------------------------------------------
                 # Get the intergenic regions
                 # -------------------------------------------------------------------------
-                message("Processing intergenic regions", type="INFO")
-                gtf_sub_bed = gtf.get_intergenic(chrom_info,
-                                                 0,
-                                                 0,
-                                                 chrom_len.keys()).merge()
+                if skip_Intergenic:
+                    message("Skipping intergenic regions",type="INFO")
+                else:
+                    message("Processing intergenic regions", type="INFO")
+                    gtf_sub_bed = gtf.get_intergenic(chrom_info,
+                                                    0,
+                                                    0,
+                                                    chrom_len.keys()).merge()
 
-                tmp_bed = make_tmp_file(prefix="ologram_intergenic", suffix=".bed")
-                gtf_sub_bed.saveas(tmp_bed.name)
+                    tmp_bed = make_tmp_file(prefix="ologram_intergenic", suffix=".bed")
+                    gtf_sub_bed.saveas(tmp_bed.name)
 
-                hits["Intergenic"] = overlap_partial(bedA=peak_file, bedsB=gtf_sub_bed, ft_type="Intergenic")
+                    hits["Intergenic"] = overlap_partial(bedA=peak_file, bedsB=gtf_sub_bed, ft_type="Intergenic")
 
                 # -------------------------------------------------------------------------
                 # Get the intronic regions
@@ -849,33 +876,35 @@ def ologram(inputfile=None,
                 # -------------------------------------------------------------------------
                 # Get the promoter regions
                 # -------------------------------------------------------------------------
+                if upstream>0 and downstream>0:
+                    message("Processing promoters", type="INFO")
+                    gtf_sub_bed = gtf.get_tss().slop(s=True,
+                                                    l=upstream,
+                                                    r=downstream,
+                                                    g=chrom_info.name).cut([0, 1, 2,
+                                                                            3, 4, 5]).sort().merge()
 
-                message("Processing promoters", type="INFO")
-                gtf_sub_bed = gtf.get_tss().slop(s=True,
-                                                 l=upstream,
-                                                 r=downstream,
-                                                 g=chrom_info.name).cut([0, 1, 2,
-                                                                         3, 4, 5]).sort().merge()
+                    tmp_bed = make_tmp_file(prefix="ologram_promoters", suffix=".bed")
+                    gtf_sub_bed.saveas(tmp_bed.name)
 
-                tmp_bed = make_tmp_file(prefix="ologram_promoters", suffix=".bed")
-                gtf_sub_bed.saveas(tmp_bed.name)
+                    hits["Promoters"] = overlap_partial(bedA=peak_file, bedsB=gtf_sub_bed, ft_type="Promoters")
 
-                hits["Promoters"] = overlap_partial(bedA=peak_file, bedsB=gtf_sub_bed, ft_type="Promoters")
+                    # -------------------------------------------------------------------------
+                    # Get the tts regions
+                    # -------------------------------------------------------------------------
 
-                # -------------------------------------------------------------------------
-                # Get the tts regions
-                # -------------------------------------------------------------------------
+                    message("Processing terminator", type="INFO")
+                    gtf_sub_bed = gtf.get_tts().slop(s=True,
+                                                    l=upstream,
+                                                    r=downstream,
+                                                    g=chrom_info.name).cut([0, 1, 2,
+                                                                            3, 4, 5]).sort().merge()
+                    tmp_bed = make_tmp_file(prefix="ologram_terminator", suffix=".bed")
+                    gtf_sub_bed.saveas(tmp_bed.name)
 
-                message("Processing terminator", type="INFO")
-                gtf_sub_bed = gtf.get_tts().slop(s=True,
-                                                 l=upstream,
-                                                 r=downstream,
-                                                 g=chrom_info.name).cut([0, 1, 2,
-                                                                         3, 4, 5]).sort().merge()
-                tmp_bed = make_tmp_file(prefix="ologram_terminator", suffix=".bed")
-                gtf_sub_bed.saveas(tmp_bed.name)
-
-                hits["Terminator"] = overlap_partial(bedA=peak_file, bedsB=gtf_sub_bed, ft_type="Terminator")
+                    hits["Terminator"] = overlap_partial(bedA=peak_file, bedsB=gtf_sub_bed, ft_type="Terminator")
+                else:
+                    message("Skipping 'promoter' and 'terminato' analysis, '-u':{}, '-d':{}".format(upstream,downstream),type="INFO")
 
         # -------------------------------------------------------------------------
         # if the user requests --more-keys (e.g. gene_biotype)
