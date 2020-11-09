@@ -207,3 +207,11 @@ Running unitary tests
 Several unitary tests have been implemented using doctests. You can run them using nose through the following command line: ::
 
     make nose
+
+ologram update for eCLIP data analysis
+--------------------------------------
+
+For eCLIP enriched regions, it may not be meaningful to analyze overlaps for all genomic regions defined in a GTF file (such as: gene, transcript,...) or to include
+TSS upstream or TTS downstream regions. This modified version add a parameter `--features` to ologram, with which user can specify the genomics regions 
+to be analyzed, skips intergenic region analysis with the option `--skip-Intergenic` and TSS upstream and TTS downstream analysis if 
+both `--upstream` and `--downstream` values are 0. 
